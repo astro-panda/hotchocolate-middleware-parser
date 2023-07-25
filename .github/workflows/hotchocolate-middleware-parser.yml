@@ -1,0 +1,28 @@
+name: Publish
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - HotChocolateMiddlewareParser/*
+      - .github/workflows/packages_template.yml
+      - .github/workflows/hotchocolate-middleware-parser.yml
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+    paths:
+      - HotChocolateMiddlewareParser/*
+      - .github/workflows/packages_template.yml
+      - .github/workflows/hotchocolate-middleware-parser.yml
+  workflow_dispatch:
+
+
+jobs:
+  build_package:
+    name: build_package
+    uses: ".github/workflows/packages_template.yml"
+    with:
+      packageName: HotChocolateMiddleWareParser 
+      projectPath: HotChocolateMiddleWareParser/HotChocolateMiddleWareParser.csproj    
