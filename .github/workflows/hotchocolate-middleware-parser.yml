@@ -22,7 +22,7 @@ on:
 jobs:
   build_package:
     name: build_package
-    uses: ".github/workflows/packages_template.yml"
+    uses: ./.github/workflows/packages_template.yml
     with:
-      packageName: HotChocolateMiddleWareParser 
-      projectPath: HotChocolateMiddleWareParser/HotChocolateMiddleWareParser.csproj    
+      packageName: HotChocolateMiddleWareParser
+      projectPath: HotChocolateMiddleWareParser/HotChocolateMiddleWareParser.csproj
