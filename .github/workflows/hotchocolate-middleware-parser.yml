@@ -25,4 +25,4 @@ jobs:
     uses: ./.github/workflows/packages_template.yml
     with:
       packageName: HotChocolateMiddlewareParser
-      projectPath: ./HotChocolateMiddlewareParser\HotChocolateMiddlewareParser.csproj
+      projectPath: HotChocolateMiddlewareParser/HotChocolateMiddlewareParser.csproj
