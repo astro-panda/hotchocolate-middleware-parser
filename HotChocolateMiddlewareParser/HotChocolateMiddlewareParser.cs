@@ -25,7 +25,7 @@ public class HotChocolateMiddlewareParser<T>
                                         IResolverContext resolver,
                                         IFilterContext filter,
                                         ISortingContext sorting,
-                                        int defaultPagingFirst,
+                                        int defaultPagingFirst = 10,
                                         Dictionary<string, string> propertyMapper = null)
     {
         _propertyMapper = propertyMapper;
@@ -56,7 +56,7 @@ public class HotChocolateMiddlewareParser<T>
     /// <summary>
     /// Filters, sorts, and pages the data source. It marks the filtering and sorting middleware as handled
     /// </summary>
-    /// <returns>The filtered, sorted, paged data source</returns>
+    /// <returns>The filtered, sorted, and paged data source</returns>
     public IQueryable<T> Parse()
     {
         HandleFilter();
