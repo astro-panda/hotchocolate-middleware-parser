@@ -28,15 +28,14 @@ public class HotChocolateMiddlewareParser<T>
                                         int defaultPagingFirst = 10,
                                         Dictionary<string, string> propertyMapper = null)
     {
-        _propertyMapper = propertyMapper;
-        _dataSource = dataSource;
+        _dataSource = dataSource ?? Enumerable.Empty<T>().AsQueryable();
         _resolver = resolver;
         _filter = filter;
         _sorting = sorting;
         _defaultPagingFirst = defaultPagingFirst;
+        _propertyMapper = new Dictionary<string, string>();
         if (propertyMapper is not null && propertyMapper.Count > 0)
         {
-            _propertyMapper = new Dictionary<string, string>();
             foreach (var property in propertyMapper)
                 _propertyMapper.Add(property.Key.ToLower(), property.Value);
 
@@ -68,7 +67,7 @@ public class HotChocolateMiddlewareParser<T>
     public void HandleFilter()
     {
         Expression fullExpression = null;
-        var filterDict = _filter.ToDictionary();
+        var filterDict = _filter.ToDictionary() ?? new Dictionary<string, object?>();
         foreach (var filter in filterDict)
         {
             Expression filterExpression = null;
@@ -103,8 +102,11 @@ public class HotChocolateMiddlewareParser<T>
                     fullExpression = Expression.And(fullExpression, filterExpression);
             }
         }
-        var whereLambda = Expression.Lambda<Func<T, bool>>(fullExpression, _parameter);
-        _dataSource = _dataSource.Where(whereLambda);
+        if (fullExpression is not null)
+        {
+            var whereLambda = Expression.Lambda<Func<T, bool>>(fullExpression, _parameter);
+            _dataSource = _dataSource.Where(whereLambda);
+        }
         _filter.Handled(true);
     }
 
@@ -135,7 +137,8 @@ public class HotChocolateMiddlewareParser<T>
                         orderedData = orderedData.ThenBy(keySelector);
                 }
             }
-            _dataSource = orderedData;
+            if (orderedData is not null)
+                _dataSource = orderedData;
         }
         _sorting.Handled(true);
     }
