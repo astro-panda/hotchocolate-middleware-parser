@@ -67,96 +67,105 @@ public class HotChocolateMiddlewareParser<T>
     public void HandleFilter()
     {
         Expression fullExpression = null;
-        var filterDict = _filter.ToDictionary() ?? new Dictionary<string, object?>();
-        foreach (var filter in filterDict)
+        if (_filter is not null)
         {
-            Expression filterExpression = null;
-            switch (filter.Key)
+            var filterDict = _filter.ToDictionary() ?? new Dictionary<string, object?>();
+            foreach (var filter in filterDict)
             {
-                case "or":
-                    foreach (var expression in GetFilterExpressions((object[])filter.Value))
-                    {
-                        if (filterExpression is null)
-                            filterExpression = expression;
-                        else
-                            filterExpression = Expression.Or(filterExpression, expression);
-                    }
-                    break;
-                case "and":
-                    foreach (var expression in GetFilterExpressions((object[])filter.Value))
-                    {
-                        if (filterExpression is null)
-                            filterExpression = expression;
-                        else
-                            filterExpression = Expression.And(filterExpression, expression);
-                    }
-                    break;
-                default:
-                    break;
+                Expression filterExpression = null;
+                switch (filter.Key)
+                {
+                    case "or":
+                        foreach (var expression in GetFilterExpressions((object[])filter.Value))
+                        {
+                            if (filterExpression is null)
+                                filterExpression = expression;
+                            else
+                                filterExpression = Expression.Or(filterExpression, expression);
+                        }
+                        break;
+                    case "and":
+                        foreach (var expression in GetFilterExpressions((object[])filter.Value))
+                        {
+                            if (filterExpression is null)
+                                filterExpression = expression;
+                            else
+                                filterExpression = Expression.And(filterExpression, expression);
+                        }
+                        break;
+                    default:
+                        break;
+                }
+                if (filterExpression is not null)
+                {
+                    if (fullExpression is null)
+                        fullExpression = filterExpression;
+                    else
+                        fullExpression = Expression.And(fullExpression, filterExpression);
+                }
             }
-            if (filterExpression is not null)
+            if (fullExpression is not null)
             {
-                if (fullExpression is null)
-                    fullExpression = filterExpression;
-                else
-                    fullExpression = Expression.And(fullExpression, filterExpression);
+                var whereLambda = Expression.Lambda<Func<T, bool>>(fullExpression, _parameter);
+                _dataSource = _dataSource.Where(whereLambda);
             }
+            _filter.Handled(true);
         }
-        if (fullExpression is not null)
-        {
-            var whereLambda = Expression.Lambda<Func<T, bool>>(fullExpression, _parameter);
-            _dataSource = _dataSource.Where(whereLambda);
-        }
-        _filter.Handled(true);
     }
 
     public void HandleSorting()
     {
         IOrderedQueryable<T> orderedData = null;
-        var sortingList = _sorting.ToList();
-        if (sortingList.Count > 0)
+        if (_sorting is not null)
         {
-            foreach (var sorting in sortingList[0])
+            var sortingList = _sorting.ToList();
+            if (sortingList.Count > 0)
             {
-                MemberExpression property = _getProperty(sorting.Key);
-
-                var keySelector = Expression.Lambda<Func<T, object>>(property, _parameter);
-
-                if (orderedData is null)
+                foreach (var sorting in sortingList[0])
                 {
-                    if ((string)sorting.Value == "DESC")
-                        orderedData = _dataSource.OrderByDescending(keySelector);
+                    MemberExpression property = _getProperty(sorting.Key);
+
+                    var keySelector = Expression.Lambda<Func<T, object>>(property, _parameter);
+
+                    if (orderedData is null)
+                    {
+                        if ((string)sorting.Value == "DESC")
+                            orderedData = _dataSource.OrderByDescending(keySelector);
+                        else
+                            orderedData = _dataSource.OrderBy(keySelector);
+                    }
                     else
-                        orderedData = _dataSource.OrderBy(keySelector);
+                    {
+                        if ((string)sorting.Value == "DESC")
+                            orderedData = orderedData.ThenByDescending(keySelector);
+                        else
+                            orderedData = orderedData.ThenBy(keySelector);
+                    }
                 }
-                else
-                {
-                    if ((string)sorting.Value == "DESC")
-                        orderedData = orderedData.ThenByDescending(keySelector);
-                    else
-                        orderedData = orderedData.ThenBy(keySelector);
-                }
+                if (orderedData is not null)
+                    _dataSource = orderedData;
             }
-            if (orderedData is not null)
-                _dataSource = orderedData;
+            _sorting.Handled(true);
         }
-        _sorting.Handled(true);
     }
 
     public void HandlePaging()
     {
-        var pagingArgs = new CursorPagingArguments(
-                first: _resolver?.ArgumentValue<int?>("first"),
-                after: _resolver?.ArgumentValue<string>("after"),
-                last: _resolver?.ArgumentValue<int?>("last"),
-                before: _resolver?.ArgumentValue<string>("before")
-            );
-        int.TryParse(Encoding.UTF8.GetString(Convert.FromBase64String(pagingArgs.After ?? "")), out int after);
+        if (_resolver is not null)
+        {
+            var pagingArgs = new CursorPagingArguments(
+                    first: _resolver?.ArgumentValue<int?>("first"),
+                    after: _resolver?.ArgumentValue<string>("after"),
+                    last: _resolver?.ArgumentValue<int?>("last"),
+                    before: _resolver?.ArgumentValue<string>("before")
+                );
+            int.TryParse(Encoding.UTF8.GetString(Convert.FromBase64String(pagingArgs.After ?? "")), out int after);
 
-        if (pagingArgs.Last is null)
-            _dataSource = _dataSource.Skip(after).Take(pagingArgs.First ?? _defaultPagingFirst);
-        else
-            _dataSource = _dataSource.Skip(after).Take((int)pagingArgs.Last);
+            if (pagingArgs.Last is null)
+                _dataSource = _dataSource.Skip(after).Take(pagingArgs.First ?? _defaultPagingFirst);
+            else
+                _dataSource = _dataSource.Skip(after).Take((int)pagingArgs.Last);
+        }
     }
 
     /// <summary>
