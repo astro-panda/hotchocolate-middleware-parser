@@ -19,31 +19,44 @@ public class HotChocolateMiddlewareParser<T>
     /// <param name="resolver">The resolver context from the middleware</param>
     /// <param name="filter">The filter context from the middleware</param>
     /// <param name="sorting">The sorting context from the middleware</param>
-    /// <param name="defaultPagingFirst">The default value for paging in the situation where a value is not provided in the paging context</param>
+    /// <param name="defaultPagingValue">The default value for paging when neither a first nor a last value were provided</param>
     /// <param name="propertyMapper">An optional property mapper for when the type of your data source does not match the Hot Chocolate type</param>
     public HotChocolateMiddlewareParser(IQueryable<T> dataSource,
                                         IResolverContext resolver,
                                         IFilterContext filter,
                                         ISortingContext sorting,
-                                        int defaultPagingFirst = 10,
+                                        int defaultPagingValue = 10,
                                         Dictionary<string, string> propertyMapper = null)
     {
         _dataSource = dataSource ?? Enumerable.Empty<T>().AsQueryable();
         _resolver = resolver;
         _filter = filter;
         _sorting = sorting;
-        _defaultPagingFirst = defaultPagingFirst;
+        _defaultPagingValue = defaultPagingValue;
         _propertyMapper = new Dictionary<string, string>();
         if (propertyMapper is not null && propertyMapper.Count > 0)
         {
+            // ToLowering the keys so that a casing problem does not arise since HotChocolate uses camelCase and C# uses PascalCase
             foreach (var property in propertyMapper)
                 _propertyMapper.Add(property.Key.ToLower(), property.Value);
 
             _usingPropertyMapper = true;
         }
+
+        if (_resolver is not null)
+        {
+            _pagingArgs = new CursorPagingArguments(
+                    first: _resolver?.ArgumentValue<int?>("first"),
+                    after: _resolver?.ArgumentValue<string>("after"),
+                    last: _resolver?.ArgumentValue<int?>("last"),
+                    before: _resolver?.ArgumentValue<string>("before")
+                );
+            // Defaulting to the first if it is provided or if neither are
+            _usingFirst = _pagingArgs.First is not null || _pagingArgs.Last is null;
+        }
     }
 
-    private int _defaultPagingFirst { get; set; }
+    private int _defaultPagingValue { get; set; }
     private Dictionary<string, string> _propertyMapper { get; set; }
     private bool _usingPropertyMapper { get; set; } = false;
     private IQueryable<T> _dataSource { get; set; }
@@ -51,6 +64,8 @@ public class HotChocolateMiddlewareParser<T>
     private IFilterContext _filter { get; set; }
     private ISortingContext _sorting { get; set; }
     private ParameterExpression _parameter = Expression.Parameter(typeof(T));
+    private bool _usingFirst { get; set; } = true;
+    private CursorPagingArguments _pagingArgs { get; set; }
 
     /// <summary>
     /// Filters, sorts, and pages the data source. It marks the filtering and sorting middleware as handled
@@ -64,6 +79,9 @@ public class HotChocolateMiddlewareParser<T>
         return _dataSource;
     }
 
+    /// <summary>
+    /// Handles the filtering from the HotChocolate middleware
+    /// </summary>
     public void HandleFilter()
     {
         Expression fullExpression = null;
@@ -94,6 +112,13 @@ public class HotChocolateMiddlewareParser<T>
                         }
                         break;
                     default:
+                        foreach (var expression in _getFilterExpressions(filter))
+                        {
+                            if (filterExpression is null)
+                                filterExpression = expression;
+                            else
+                                filterExpression = Expression.And(filterExpression, expression);
+                        }
                         break;
                 }
                 if (filterExpression is not null)
@@ -113,6 +138,9 @@ public class HotChocolateMiddlewareParser<T>
         }
     }
 
+    /// <summary>
+    /// Handles the sorting from the HotChocolate middleware
+    /// </summary>
     public void HandleSorting()
     {
         IOrderedQueryable<T> orderedData = null;
@@ -126,29 +154,43 @@ public class HotChocolateMiddlewareParser<T>
                     MemberExpression property = _getProperty(sorting.Key);
 
                     var keySelector = Expression.Lambda<Func<T, object>>(property, _parameter);
+                    bool orderAsc = (string)sorting.Value == "ASC";
 
                     if (orderedData is null)
                     {
-                        if ((string)sorting.Value == "DESC")
-                            orderedData = _dataSource.OrderByDescending(keySelector);
-                        else
+                        // This is an XNOR gate. I needed ((!orderAsc && !_usingFirst) || (orderAsc && _usingFirst))
+                        // but realized that it was equivalent to an XNOR and I found that in C# you can do (orderAsc == _usingFirst)
+
+                        // This is flipping the ordering if paging will be using the 'last' value. To grab the last 5 for a specific ordering we
+                        // need to flip the ordering and then handle paging (see comment at end of function)
+                        if (orderAsc == _usingFirst)
                             orderedData = _dataSource.OrderBy(keySelector);
+                        else
+                            orderedData = _dataSource.OrderByDescending(keySelector);
                     }
                     else
                     {
-                        if ((string)sorting.Value == "DESC")
-                            orderedData = orderedData.ThenByDescending(keySelector);
-                        else
+                        if (orderAsc == _usingFirst)
                             orderedData = orderedData.ThenBy(keySelector);
+                        else
+                            orderedData = orderedData.ThenByDescending(keySelector);
                     }
                 }
                 if (orderedData is not null)
                     _dataSource = orderedData;
             }
-            _sorting.Handled(true);
+            // This marks sorting as having been handled if we are using the 'first' value from paging so that the middleware doesn't do it again. 
+            // But if we flip the order in order to use the 'last' value from paging (see above comment) we need to let the middleware reorder it
+            // to the requested order. Otherwise it would be returned in the opposite order
+            if (!_usingFirst)
+                _sorting.Handled(true);
         }
     }
 
+    /// <summary>
+    /// Handles the paging from the HotChocolate middleware <br/><br/>
+    /// TODO: Figure out how to tell the middleware that the paging is handled
+    /// </summary>
     public void HandlePaging()
     {
         if (_resolver is not null)
@@ -159,12 +201,15 @@ public class HotChocolateMiddlewareParser<T>
                     last: _resolver?.ArgumentValue<int?>("last"),
                     before: _resolver?.ArgumentValue<string>("before")
                 );
-            int.TryParse(Encoding.UTF8.GetString(Convert.FromBase64String(pagingArgs.After ?? "")), out int after);
+            if (int.TryParse(Encoding.UTF8.GetString(Convert.FromBase64String(pagingArgs.After ?? "")), out int after))
+                after++;
 
-            if (pagingArgs.Last is null)
-                _dataSource = _dataSource.Skip(after).Take(pagingArgs.First ?? _defaultPagingFirst);
+            // If _usingFirst is true, the ordering should match the requested, if it is false it should be flipped so that we can grab
+            // the last x entries (see comments in the HandleSorting function)
+            if (_usingFirst)
+                _dataSource = _dataSource.Skip(after).Take(pagingArgs.First ?? _defaultPagingValue);
             else
-                _dataSource = _dataSource.Skip(after).Take((int)pagingArgs.Last);
+                _dataSource = _dataSource.Skip(after).Take(pagingArgs.Last ?? _defaultPagingValue);
         }
     }
 
@@ -176,21 +221,33 @@ public class HotChocolateMiddlewareParser<T>
     /// <exception cref="KeyNotFoundException">Thrown when you provide a property mapper in the constructor but Hot Chocolate is trying to filter on a property that is not in the property mapper</exception>
     public IEnumerable<Expression> GetFilterExpressions(object[] filters)
     {
+        var expressions = new List<Expression>();
         foreach (var α in filters)
         {
             foreach (DictionaryEntry ß in (IDictionary)α)
             {
-                MemberExpression property = _getProperty((string)ß.Key);
+                expressions.AddRange(_getFilterExpressions(new KeyValuePair<string, object>((string)ß.Key, ß.Value)));
+            }
+        }
+        return expressions;
+    }
 
-                foreach (DictionaryEntry entry in (IDictionary)ß.Value)
-                {
-                    var value = Expression.Constant(entry.Value);
-                    Expression expression = _getExpression((string)entry.Key, property, value);
-                    if (expression is not null)
-                    {
-                        yield return expression;
-                    }
-                }
+    /// <summary>
+    /// Pulled this functionality out of <see cref="GetFilterExpressions(object[])"/> so that it can be used in <see cref="HandleFilter"/>
+    /// </summary>
+    /// <param name="entry">The <see cref="KeyValuePair"/> from the <see cref="IFilterContext"/></param>
+    /// <returns>The parsed filter expressions</returns>
+    private IEnumerable<Expression> _getFilterExpressions(KeyValuePair<string, object> entry)
+    {
+        MemberExpression property = _getProperty(entry.Key);
+
+        foreach (DictionaryEntry filterValue in (IDictionary)entry.Value)
+        {
+            var value = Expression.Constant(filterValue.Value);
+            Expression expression = _getExpression((string)filterValue.Key, property, value);
+            if (expression is not null)
+            {
+                yield return expression;
             }
         }
     }
