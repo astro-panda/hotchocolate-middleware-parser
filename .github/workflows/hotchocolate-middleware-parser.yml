@@ -5,7 +5,8 @@ on:
     branches:
       - main
     paths:
-      - HotChocolateMiddlewareParser/*
+      - src/HotChocolateMiddlewareParser.cs
+      - src/HotChocolateMiddlewareParser.csproj
       - .github/workflows/packages_template.yml
       - .github/workflows/hotchocolate-middleware-parser.yml
   pull_request:
@@ -13,7 +14,8 @@ on:
     branches:
       - main
     paths:
-      - HotChocolateMiddlewareParser/*
+      - src/HotChocolateMiddlewareParser.cs
+      - src/HotChocolateMiddlewareParser.csproj
       - .github/workflows/packages_template.yml
       - .github/workflows/hotchocolate-middleware-parser.yml
   workflow_dispatch:
@@ -25,4 +27,4 @@ jobs:
     uses: ./.github/workflows/packages_template.yml
     with:
       packageName: HotChocolateMiddlewareParser
-      projectPath: HotChocolateMiddlewareParser/HotChocolateMiddlewareParser.csproj
+      projectPath: src/HotChocolateMiddlewareParser.csproj
