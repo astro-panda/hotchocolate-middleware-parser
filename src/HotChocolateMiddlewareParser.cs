@@ -28,7 +28,7 @@ public class HotChocolateMiddlewareParser<T>
                                         int defaultPagingValue = 10,
                                         Dictionary<string, string> propertyMapper = null)
     {
-        _dataSource = dataSource ?? Enumerable.Empty<T>().AsQueryable();
+        Data = dataSource ?? Enumerable.Empty<T>().AsQueryable();
         _resolver = resolver;
         _filter = filter;
         _sorting = sorting;
@@ -53,30 +53,57 @@ public class HotChocolateMiddlewareParser<T>
                 );
             // Defaulting to the first if it is provided or if neither are
             _usingFirst = _pagingArgs.First is not null || _pagingArgs.Last is null;
+
+            if (Data.TryGetNonEnumeratedCount(out var count))
+                _totalCount = count;
+
+
+            if (TryFromBase64(_pagingArgs.After, out int after))
+                after++;
+
+            _afterValue = after;
+            _firstValue = _pagingArgs.First ?? _defaultPagingValue;
+
+            bool hasNextPage = _totalCount > _firstValue + _afterValue;
+            bool hasPreviousPage = _afterValue > 0;
+            _pageInfo = new(hasNextPage, hasPreviousPage, ToBase64(_afterValue), ToBase64(_afterValue + _firstValue));
         }
     }
+
+    public IQueryable<T> Data { get; set; }
 
     private int _defaultPagingValue { get; set; }
     private Dictionary<string, string> _propertyMapper { get; set; }
     private bool _usingPropertyMapper { get; set; } = false;
-    private IQueryable<T> _dataSource { get; set; }
     private IResolverContext _resolver { get; set; }
     private IFilterContext _filter { get; set; }
     private ISortingContext _sorting { get; set; }
     private ParameterExpression _parameter = Expression.Parameter(typeof(T));
     private bool _usingFirst { get; set; } = true;
     private CursorPagingArguments _pagingArgs { get; set; }
+    private ConnectionPageInfo _pageInfo { get; set; }
+    private int _totalCount { get; set; } = 0;
+    private int _afterValue { get; set; } = 0;
+    private int _firstValue { get; set; } = 0;
 
     /// <summary>
     /// Filters, sorts, and pages the data source. It marks the filtering and sorting middleware as handled
     /// </summary>
-    /// <returns>The filtered, sorted, and paged data source</returns>
+    /// <returns>The filtered, sorted, and paged data source (i.e. <see cref="Data"/>)</returns>
     public IQueryable<T> Parse()
     {
         HandleFilter();
         HandleSorting();
         HandlePaging();
-        return _dataSource;
+        // If we flip the order in order to use the 'last' value from paging (see comment in HandleSorting) we need to reorder it
+        // to the requested order. Otherwise it would be returned in the opposite order
+        if (!_usingFirst)
+        {
+            // We have to enumerate it and then reorder since a lot of IQueryable data sources cannot order after handling paging
+            Data = Data.ToList().AsQueryable();
+            HandleSorting(true);
+        }
+        return Data;
     }
 
     /// <summary>
@@ -132,7 +159,7 @@ public class HotChocolateMiddlewareParser<T>
             if (fullExpression is not null)
             {
                 var whereLambda = Expression.Lambda<Func<T, bool>>(fullExpression, _parameter);
-                _dataSource = _dataSource.Where(whereLambda);
+                Data = Data.Where(whereLambda);
             }
             _filter.Handled(true);
         }
@@ -141,7 +168,7 @@ public class HotChocolateMiddlewareParser<T>
     /// <summary>
     /// Handles the sorting from the HotChocolate middleware
     /// </summary>
-    public void HandleSorting()
+    public void HandleSorting(bool reorder = false)
     {
         IOrderedQueryable<T> orderedData = null;
         if (_sorting is not null)
@@ -155,6 +182,10 @@ public class HotChocolateMiddlewareParser<T>
 
                     var keySelector = Expression.Lambda<Func<T, object>>(property, _parameter);
                     bool orderAsc = (string)sorting.Value == "ASC";
+                    // When using the last value from paging we need to reorder it after everything is done
+                    // and this will ensure that the proper ordering takes place below
+                    if (reorder)
+                        orderAsc = !orderAsc;
 
                     if (orderedData is null)
                     {
@@ -164,9 +195,9 @@ public class HotChocolateMiddlewareParser<T>
                         // This is flipping the ordering if paging will be using the 'last' value. To grab the last 5 for a specific ordering we
                         // need to flip the ordering and then handle paging (see comment at end of function)
                         if (orderAsc == _usingFirst)
-                            orderedData = _dataSource.OrderBy(keySelector);
+                            orderedData = Data.OrderBy(keySelector);
                         else
-                            orderedData = _dataSource.OrderByDescending(keySelector);
+                            orderedData = Data.OrderByDescending(keySelector);
                     }
                     else
                     {
@@ -177,7 +208,7 @@ public class HotChocolateMiddlewareParser<T>
                     }
                 }
                 if (orderedData is not null)
-                    _dataSource = orderedData;
+                    Data = orderedData;
             }
             // This marks sorting as having been handled if we are using the 'first' value from paging so that the middleware doesn't do it again. 
             // But if we flip the order in order to use the 'last' value from paging (see above comment) we need to let the middleware reorder it
@@ -189,28 +220,42 @@ public class HotChocolateMiddlewareParser<T>
 
     /// <summary>
     /// Handles the paging from the HotChocolate middleware <br/><br/>
-    /// TODO: Figure out how to tell the middleware that the paging is handled
+    /// Note: The before paging argument is not currently supported
     /// </summary>
     public void HandlePaging()
     {
         if (_resolver is not null)
         {
-            var pagingArgs = new CursorPagingArguments(
-                    first: _resolver?.ArgumentValue<int?>("first"),
-                    after: _resolver?.ArgumentValue<string>("after"),
-                    last: _resolver?.ArgumentValue<int?>("last"),
-                    before: _resolver?.ArgumentValue<string>("before")
-                );
-            if (int.TryParse(Encoding.UTF8.GetString(Convert.FromBase64String(pagingArgs.After ?? "")), out int after))
-                after++;
-
             // If _usingFirst is true, the ordering should match the requested, if it is false it should be flipped so that we can grab
             // the last x entries (see comments in the HandleSorting function)
             if (_usingFirst)
-                _dataSource = _dataSource.Skip(after).Take(pagingArgs.First ?? _defaultPagingValue);
+                Data = Data.Skip(_afterValue).Take(_pagingArgs.First ?? _defaultPagingValue);
             else
-                _dataSource = _dataSource.Skip(after).Take(pagingArgs.Last ?? _defaultPagingValue);
+                Data = Data.Skip(_afterValue).Take(_pagingArgs.Last ?? _defaultPagingValue);
         }
+    }
+
+    /// <summary>
+    /// Converts a value from a base 64 string to an int
+    /// </summary>
+    /// <param name="stringValue">The base 64 string to convert to an int</param>
+    /// <param name="intValue">The int resulting from the conversion</param>
+    /// <returns><c>true</c> if the conversion was successful<br/><c>false</c> if the conversion was not successful</returns>
+    public bool TryFromBase64(string? stringValue, out int intValue)
+    {
+        var result = int.TryParse(Encoding.UTF8.GetString(Convert.FromBase64String(stringValue ?? "")), out int intermediateInt);
+        intValue = intermediateInt;
+        return result;
+    }
+
+    /// <summary>
+    /// Converts a value from an int to its corresponding value in base 64 as a string
+    /// </summary>
+    /// <param name="intValue">The int to convert to base 64</param>
+    /// <returns>The base 64 string equivalent to the int provided</returns>
+    public string ToBase64(int intValue)
+    {
+        return Convert.ToBase64String(Encoding.UTF8.GetBytes(intValue.ToString()));
     }
 
     /// <summary>
@@ -303,13 +348,38 @@ public class HotChocolateMiddlewareParser<T>
     {
         if (_usingPropertyMapper)
         {
-            if (_propertyMapper.TryGetValue(propName.ToLower(), out string invItemPropName))
-                return Expression.Property(_parameter, invItemPropName.Pascalize());
+            if (_propertyMapper.TryGetValue(propName.ToLower(), out string newPropName))
+                return Expression.Property(_parameter, newPropName.Pascalize());
             else
                 throw new KeyNotFoundException($"You provided a property mapper and HotChocolate tried to use the property " +
                                                $"{propName.Pascalize()} but it was not found in the property mapper.");
         }
         else
             return Expression.Property(_parameter, propName.Pascalize());
+    }
+
+    /// <summary>
+    /// Builds a <see cref="Connection"/> to return in your graphql endpoint to tell the middleware that paging is handled
+    /// </summary>
+    /// <typeparam name="THotChoc">The type HotChocolate is expecting</typeparam>
+    /// <param name="collection">The collection of type <typeparamref name="THotChoc"/> to build a connection from</param>
+    /// <returns>The <see cref="Connection"/> built from <paramref name="collection"/></returns>
+    public Connection<THotChoc> BuildConnection<THotChoc>(IEnumerable<THotChoc> collection)
+    {
+        var edges = new List<Edge<THotChoc>>();
+        for (var i = 0; i < collection.Count(); i++)
+        {
+            edges.Add(new Edge<THotChoc>(collection.ElementAt(i), ToBase64(_afterValue + i)));
+        }
+        return new Connection<THotChoc>(edges, _pageInfo, _totalCount);
+    }
+
+    /// <summary>
+    /// Builds a <see cref="Connection"/> to return in your graphql endpoint to tell the middleware that paging is handled
+    /// </summary>
+    /// <returns>The <see cref="Connection"/> built from <see cref="Data"/></returns>
+    public Connection<T> BuildConnection()
+    {
+        return BuildConnection(Data);
     }
 }
