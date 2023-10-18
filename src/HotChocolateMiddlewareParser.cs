@@ -285,10 +285,15 @@ public class HotChocolateMiddlewareParser<T>
     private IEnumerable<Expression> _getFilterExpressions(KeyValuePair<string, object> entry)
     {
         MemberExpression property = _getProperty(entry.Key);
+        var propType = ((PropertyInfo)property.Member).PropertyType;
 
         foreach (DictionaryEntry filterValue in (IDictionary)entry.Value)
         {
             var value = Expression.Constant(filterValue.Value);
+            if (value.Type != propType)
+            {
+                value = _convertConstantType(value, propType);
+            }
             Expression expression = _getExpression((string)filterValue.Key, property, value);
             if (expression is not null)
             {
@@ -356,6 +361,25 @@ public class HotChocolateMiddlewareParser<T>
         }
         else
             return Expression.Property(_parameter, propName.Pascalize());
+    }
+
+    public ConstantExpression _convertConstantType(ConstantExpression value, Type propType)
+    {
+        var valueTypeName = value.Type.Name;
+        if (valueTypeName.Contains("Nullable"))
+            valueTypeName = "Nullable" + Nullable.GetUnderlyingType(value.Type).Name;
+        var propTypeName = propType.Name;
+        if (propTypeName.Contains("Nullable"))
+            propTypeName = "Nullable" + Nullable.GetUnderlyingType(propType).Name;
+
+        return (valueTypeName, propTypeName) switch
+        {
+            (nameof(DateTimeOffset), "NullableDateTime") => Expression.Constant(((DateTimeOffset)value.Value).UtcDateTime, typeof(DateTime?)),
+            (nameof(DateTimeOffset), nameof(DateTime)) => Expression.Constant(((DateTimeOffset)value.Value).UtcDateTime),
+            (nameof(DateTime), nameof(DateTimeOffset)) => Expression.Constant(new DateTimeOffset((DateTime)value.Value)),
+            (nameof(DateTime), "NullableDateTimeOffset") => Expression.Constant(new DateTimeOffset((DateTime)value.Value), typeof(DateTimeOffset?)),
+            _ => throw new InvalidCastException($"No explicit conversion from {value.Type} to {propType} exists")
+        };
     }
 
     /// <summary>
