@@ -54,9 +54,17 @@ public class HotChocolateMiddlewareParser<T>
             // Defaulting to the first if it is provided or if neither are
             _usingFirst = _pagingArgs.First is not null || _pagingArgs.Last is null;
 
-            if (Data.TryGetNonEnumeratedCount(out var count))
-                _totalCount = count;
-
+            try
+            {
+                if (Data.TryGetNonEnumeratedCount(out var count))
+                    _totalCount = count;
+                else
+                    _totalCount = Data.AsQueryable().Count();
+            }
+            catch (NotSupportedException ex)
+            {
+                _totalCount = 0;
+            }
 
             if (TryFromBase64(_pagingArgs.After, out int after))
                 after++;
@@ -376,8 +384,10 @@ public class HotChocolateMiddlewareParser<T>
         {
             (nameof(DateTimeOffset), "NullableDateTime") => Expression.Constant(((DateTimeOffset)value.Value).UtcDateTime, typeof(DateTime?)),
             (nameof(DateTimeOffset), nameof(DateTime)) => Expression.Constant(((DateTimeOffset)value.Value).UtcDateTime),
+            (nameof(DateTimeOffset), "NullableDateTimeOffset") => Expression.Constant((DateTimeOffset)value.Value, typeof(DateTimeOffset?)),
             (nameof(DateTime), nameof(DateTimeOffset)) => Expression.Constant(new DateTimeOffset((DateTime)value.Value)),
             (nameof(DateTime), "NullableDateTimeOffset") => Expression.Constant(new DateTimeOffset((DateTime)value.Value), typeof(DateTimeOffset?)),
+            (nameof(String), "NullableInt32") => Expression.Constant(int.TryParse((string)value.Value, out int intValue) ? intValue : 0, typeof(int?)),
             _ => throw new InvalidCastException($"No explicit conversion from {value.Type} to {propType} exists")
         };
     }
